@@ -7,24 +7,24 @@
 #include <ctime>
 #include <algorithm>
 #include <cmath>
-#include <mosquitto.h>
-
-const char* mqttBroker = "broker.emqx.io";
-const char* mqttTopic = "radar/data";
-
-struct mqtt_userdata {
-	int distance;
-	int degree;
-};
-
-struct mosquitto* mosq;
-
-void messageCallback(struct mosquitto* mosq, void* obj, const struct mosquitto_message* msg) {
-	struct mqtt_userdata* userdata = (struct mqtt_userdata*)obj;
-
-	// Parse the received JSON payload
-	sscanf((const char*)msg->payload, "{\"distance\":%d,\"degree\":%d}", &userdata->distance, &userdata->degree);
-}
+//#include <mosquitto.h>
+//
+//const char* mqttBroker = "broker.emqx.io";
+//const char* mqttTopic = "radar/data";
+//
+//struct mqtt_userdata {
+//	int distance;
+//	int degree;
+//};
+//
+//struct mosquitto* mosq;
+//
+//void messageCallback(struct mosquitto* mosq, void* obj, const struct mosquitto_message* msg) {
+//	struct mqtt_userdata* userdata = (struct mqtt_userdata*)obj;
+//
+//	// Parse the received JSON payload
+//	sscanf((const char*)msg->payload, "{\"distance\":%d,\"degree\":%d}", &userdata->distance, &userdata->degree);
+//}
 
 void embraceTheDarkness();
 
@@ -157,21 +157,30 @@ private:
 		float radius = (windowSize.y * 0.8f) / 2.0f;
 		static float angle = 0.0f;
 
-		const int numberOfLine = 1000;
-		const int mainLineNum = static_cast<int>(numberOfLine * 0.009);
-		const int fadeAlpha{ 20 };
-
-		for (int i = 0; i < numberOfLine; i++) {
-			float radian = (angle - i * (30.0 / numberOfLine)) * IM_PI / 180;
+		const float numLine{ 360.0f };
+		const int fade{ 130 };
+		for (float i{}; i < numLine; i += 0.1f) {
+			float diff = angle - i;
+			float radian = i * IM_PI / 180;
 			ImVec2 end = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
 			int alpha{};
-			if (i <= mainLineNum) {
-				alpha = 255;
+			if (diff > 0) {
+				alpha = fade - (diff * fade) / 360.0f;
 			}
 			else {
-				alpha = static_cast<int>(fadeAlpha * exp(-3.0 * (i - mainLineNum) / numberOfLine));
+				alpha = (-1 * diff * fade) / 360.0f;
 			}
-			ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(255, 187, 38, alpha), 2.0f);
+			ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(5, 53, 4, alpha), 2.0f);
+		}
+		for (float i{}; i < numLine; i += 0.1f) {
+			float diff = angle - i;
+			float radian = i * IM_PI / 180;
+			ImVec2 end = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
+			int alpha{};
+			if (diff >= 0 && diff <= 1) {
+				alpha = 255;
+			}
+			ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(18, 182, 13, alpha), 2.0f);
 		}
 
 		for (int i = 0; i < 360; i += 30) {
@@ -184,8 +193,6 @@ private:
 			}
 			RenderRadarLine(center, radius, angle, i, false);
 		}
-
-		RenderDistanceCircles(center, radius, 50, 450);
 
 		for (auto& target : targets) {
 			float targetRadian = target.degree * IM_PI / 180;
@@ -211,6 +218,8 @@ private:
 			}
 		}
 
+		RenderDistanceCircles(center, radius, 50, 450);
+
 		ImGui::GetWindowDrawList()->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255, 255));
 
 		angle += 0.1f;
@@ -223,19 +232,28 @@ private:
 
 	void RenderRadarLine(const ImVec2& center, float radius, float angle, int degree, bool isMainLine) {
 		float radian = degree * IM_PI / 180;
-		ImVec2 end = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
-		ImVec2 start = ImVec2(center.x + cos(radian) * (radius - (isMainLine ? 20 : 10)), center.y + sin(radian) * (radius - (isMainLine ? 20 : 10)));
+		ImVec2 start = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
+		ImVec2 end = ImVec2(center.x + cos(radian) * (radius + (isMainLine ? 20 : 10)), center.y + sin(radian) * (radius + (isMainLine ? 20 : 10)));
 
 		if (degree % 90 == 0) {
-			ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(255, 255, 255, 200), 3.0f);
+			ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(150, 150, 150, 150), 3.0f);
 		}
 		else {
-			ImGui::GetWindowDrawList()->AddLine(start, end, IM_COL32(255, 187, 38, 255), isMainLine ? 4.5f : 2.0f);
+			ImGui::GetWindowDrawList()->AddLine(start, end, IM_COL32(255, 255, 255, 255), isMainLine ? 4.5f : 2.5f);
+		}
+		if (degree % 90 == 0) {
+			ImGui::GetWindowDrawList()->AddLine(start, end, IM_COL32(255, 255, 255, 255), isMainLine ? 4.5f : 2.5f);
 		}
 
 		if (degree % 30 == 0) {
-			ImVec2 textPos = ImVec2(end.x + 30 * cos(radian) - 10, end.y + 30 * sin(radian) - 8);
+		    ImVec2 textPos = ImVec2(end.x + 30 * cos(radian) - 10, end.y + 30 * sin(radian) - 8);
 			ImGui::GetWindowDrawList()->AddText(textPos, IM_COL32(255, 255, 255, 255), std::to_string(degree).c_str());
+		}
+		else if(degree % 5 == 0) {
+			ImGui::SetWindowFontScale(0.8f);
+			ImVec2 textPos = ImVec2(end.x + 20 * cos(radian) - 15, end.y + 20 * sin(radian) - 6);
+			ImGui::GetWindowDrawList()->AddText(textPos, IM_COL32(150, 150, 150, 150), std::to_string(degree).c_str());
+			ImGui::SetWindowFontScale(1.0f);
 		}
 	}
 
@@ -261,9 +279,10 @@ private:
 		float targetRadian = degree * IM_PI / 180;
 		for (float i = degree - 0.5f; i <= 0.5f + degree; i += 0.1f) {
 			targetRadian = i * IM_PI / 180;
-			ImVec2 end = ImVec2(center.x + cos(targetRadian) * radius, center.y + sin(targetRadian) * radius);
+			//ImVec2 end = ImVec2(center.x + cos(targetRadian) * radius, center.y + sin(targetRadian) * radius);
 			ImVec2 targetPosition = ImVec2(center.x + cos(targetRadian) * distance, center.y + sin(targetRadian) * distance);
-			ImGui::GetWindowDrawList()->AddLine(targetPosition, end, IM_COL32(255, 187, 38, alpha), 1.0f);
+			ImGui::GetWindowDrawList()->AddLine(center, targetPosition, IM_COL32(23, 235, 17, alpha), 1.0f);
+			//ImGui::GetWindowDrawList()->AddCircleFilled(targetPosition, 8.0f, IM_COL32(23, 235, 17, alpha));
 		}
 	}
 
