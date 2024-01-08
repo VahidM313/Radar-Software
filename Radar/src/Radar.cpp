@@ -7,26 +7,13 @@
 #include <ctime>
 #include <algorithm>
 #include <cmath>
-//#include <mosquitto.h>
-//
-//const char* mqttBroker = "broker.emqx.io";
-//const char* mqttTopic = "radar/data";
-//
-//struct mqtt_userdata {
-//	int distance;
-//	int degree;
-//};
-//
-//struct mosquitto* mosq;
-//
-//void messageCallback(struct mosquitto* mosq, void* obj, const struct mosquitto_message* msg) {
-//	struct mqtt_userdata* userdata = (struct mqtt_userdata*)obj;
-//
-//	// Parse the received JSON payload
-//	sscanf((const char*)msg->payload, "{\"distance\":%d,\"degree\":%d}", &userdata->distance, &userdata->degree);
-//}
+#include <mosquitto.h>
+#include <boost/json.hpp>
 
 void embraceTheDarkness();
+void on_connect(struct mosquitto* mosq, void* obj, int result);
+void on_message(struct mosquitto* mosq, void* obj, const struct mosquitto_message* message);
+void sendMQTTMessage(struct mosquitto* mosq, const std::string& direction);
 
 struct TableEntry {
 	unsigned long id;
@@ -36,25 +23,21 @@ struct TableEntry {
 };
 
 struct Target {
-	int distance;
-	int degree;
-	bool isVisible;
-	int count;
+	int distance{};
+	int degree{};
+	bool isVisible{ true };
+	bool isShow{ false };
+	int count{};
 };
 
 int dist{}, deg{};
+bool error{ false }, sweep{ false };
 
 typedef std::vector<Target> vectar;
 
-vectar targets = {
-	{200,45,true,0},
-	{34,87,true,0},
-	{127,134,true,0},
-	{356,185,true,0},
-	{5,222,true,0},
-	{85,269,true,0},
-	{265,350,true,0},
-};
+vectar targets{};
+
+std::vector<std::pair<int, int>> vec;
 
 std::vector<TableEntry> tableEntries;
 
@@ -63,10 +46,28 @@ public:
 	virtual void OnUIRender() override {
 		embraceTheDarkness();
 		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(17.0f / 255.0f, 17.0f / 255.0f, 17.0f / 255.0f, 1.0f));
-		ImGui::Begin("connection");
-		if (ImGui::Button("generate")) {
+		ImGui::Begin("setting");
+		ImGui::Text("Control Buttons");
+		ImGui::Spacing();
+		if (ImGui::Button("Generate")) {
 			GenerateRandomTargets(30);
 		}
+		if (ImGui::Button("Sweep")) {
+			sweep = !sweep;
+		}
+		if (ImGui::Button("Left")) {
+			sendMQTTMessage(mosq, "left");
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Stop")) {
+			sendMQTTMessage(mosq, "stop");
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Right")) {
+			sendMQTTMessage(mosq, "right");
+		}
+		if (error)
+			ImGui::Text("unable to connect");
 		ImGui::End();
 
 		ImGui::Begin("Radar");
@@ -88,15 +89,50 @@ public:
 		ImGui::PopStyleColor();
 	}
 
+	ExampleLayer() {
+		for (int i = 0; i <= 360; ++i) {
+			vec.push_back(std::make_pair(i, 0));
+		}
+		// Initialize the Mosquitto library
+		mosquitto_lib_init();
+
+		// Create a new Mosquitto client
+		mosq = mosquitto_new(NULL, true, NULL);
+		if (!mosq) {
+			//std::cerr << "Error: Out of memory.\n";
+			return;
+		}
+
+		// Set up the necessary callbacks
+		mosquitto_connect_callback_set(mosq, on_connect);
+		mosquitto_message_callback_set(mosq, on_message);
+
+		// Connect to the Mosquitto broker
+		if (mosquitto_connect(mosq, "localhost", 1883, 60)) {
+			//std::cerr << "Unable to connect.\n";
+			error = true;
+			return;
+		}
+
+		// Start the main network loop
+		mosquitto_loop_start(mosq);
+	}
+
+	~ExampleLayer() {
+		// Clean up the Mosquitto client and library
+		mosquitto_destroy(mosq);
+		mosquitto_lib_cleanup();
+	}
+
+
 private:
 	int counter{};
+	struct mosquitto* mosq;
 	void GenerateRandomTargets(int count) {
 		for (int i = 0; i < count; i++) {
 			Target target;
 			target.distance = std::rand() % 360; // Random distance between 0 and 500
 			target.degree = std::rand() % 360; // Random degree between 0 and 360
-			target.isVisible = true;  // All targets are initially visible
-			target.count = 0;
 			targets.push_back(target);
 		}
 	}
@@ -157,30 +193,32 @@ private:
 		float radius = (windowSize.y * 0.8f) / 2.0f;
 		static float angle = 0.0f;
 
-		const float numLine{ 360.0f };
-		const int fade{ 130 };
-		for (float i{}; i < numLine; i += 0.1f) {
-			float diff = angle - i;
-			float radian = i * IM_PI / 180;
-			ImVec2 end = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
-			int alpha{};
-			if (diff > 0) {
-				alpha = fade - (diff * fade) / 360.0f;
+		if (sweep) {
+			const float numLine{ 360.0f };
+			const int fade{ 130 };
+			for (float i{}; i < numLine; i += 0.1f) {
+				float diff = angle - i;
+				float radian = i * IM_PI / 180;
+				ImVec2 end = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
+				int alpha{};
+				if (diff > 0) {
+					alpha = fade - (diff * fade) / 360.0f;
+				}
+				else {
+					alpha = (-1 * diff * fade) / 360.0f;
+				}
+				ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(5, 53, 4, alpha), 2.0f);
 			}
-			else {
-				alpha = (-1 * diff * fade) / 360.0f;
+			for (float i{}; i < numLine; i += 0.1f) {
+				float diff = angle - i;
+				float radian = i * IM_PI / 180;
+				ImVec2 end = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
+				int alpha{};
+				if (diff >= 0 && diff <= 1) {
+					alpha = 255;
+				}
+				ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(18, 182, 13, alpha), 2.0f);
 			}
-			ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(5, 53, 4, alpha), 2.0f);
-		}
-		for (float i{}; i < numLine; i += 0.1f) {
-			float diff = angle - i;
-			float radian = i * IM_PI / 180;
-			ImVec2 end = ImVec2(center.x + cos(radian) * radius, center.y + sin(radian) * radius);
-			int alpha{};
-			if (diff >= 0 && diff <= 1) {
-				alpha = 255;
-			}
-			ImGui::GetWindowDrawList()->AddLine(center, end, IM_COL32(18, 182, 13, alpha), 2.0f);
 		}
 
 		for (int i = 0; i < 360; i += 30) {
@@ -194,27 +232,38 @@ private:
 			RenderRadarLine(center, radius, angle, i, false);
 		}
 
-		for (auto& target : targets) {
-			float targetRadian = target.degree * IM_PI / 180;
-			float diff = angle - target.degree;
-			if (diff < 0 && target.count == 1) {
-				diff += 360;
-			}
-			diff = floor(diff * 10) / 10;
-			if (diff > 0) {
-				int alpha = static_cast<int>(255 - 255 * (diff / 360.0f));
-				RenderTargetLines(center, radius, target.degree, target.distance, alpha);
-			}
-			if (diff == 0)
-			{
-				target.count++;
-				if (target.count == 1) {
-					AddTargetToTable(target);
-					dist = target.distance;
-					deg = target.degree;
+		if (sweep) {
+			for (auto& target : targets) {
+				float targetRadian = target.degree * IM_PI / 180;
+				float diff = angle - target.degree;
+				if (diff < 0 && target.count == 1) {
+					diff += 360;
 				}
-				if (target.count == 2)
-					target.isVisible = false;
+				diff = floor(diff * 10) / 10;
+				if (diff > 0 && target.isShow) {
+					int alpha = static_cast<int>(255 - 255 * (diff / 360.0f));
+					RenderTargetLines(center, radius, target.degree, target.distance, alpha);
+				}
+				if (diff == 0)
+				{
+					target.count++;
+					if (target.count) {
+						AddTargetToTable(target);
+						target.isShow = true;
+					}
+					if (target.count == 1) {
+						dist = target.distance;
+						deg = target.degree;
+					}
+					if (target.count == 2)
+						target.isVisible = false;
+				}
+			}
+		}
+		else {
+			for (auto& t : vec) {
+				int alpha = static_cast<int>(255 - 255 * (t.second / 450.0f));
+				RenderTargetLines(center, radius, t.first, t.second, alpha);
 			}
 		}
 
@@ -222,12 +271,14 @@ private:
 
 		ImGui::GetWindowDrawList()->AddCircleFilled(center, 5.0f, IM_COL32(255, 255, 255, 255, 255));
 
-		angle += 0.1f;
-		if (angle > 360.0f) angle = 0.0f;
-
 		targets.erase(std::remove_if(targets.begin(), targets.end(), [](const Target& target) {
 			return !target.isVisible;
 			}), targets.end());
+
+		angle += 0.1f;
+		if (angle > 360.0f) {
+			angle = 0.0f;
+		}
 	}
 
 	void RenderRadarLine(const ImVec2& center, float radius, float angle, int degree, bool isMainLine) {
@@ -246,10 +297,10 @@ private:
 		}
 
 		if (degree % 30 == 0) {
-		    ImVec2 textPos = ImVec2(end.x + 30 * cos(radian) - 10, end.y + 30 * sin(radian) - 8);
+			ImVec2 textPos = ImVec2(end.x + 30 * cos(radian) - 10, end.y + 30 * sin(radian) - 8);
 			ImGui::GetWindowDrawList()->AddText(textPos, IM_COL32(255, 255, 255, 255), std::to_string(degree).c_str());
 		}
-		else if(degree % 5 == 0) {
+		else if (degree % 5 == 0) {
 			ImGui::SetWindowFontScale(0.8f);
 			ImVec2 textPos = ImVec2(end.x + 20 * cos(radian) - 15, end.y + 20 * sin(radian) - 6);
 			ImGui::GetWindowDrawList()->AddText(textPos, IM_COL32(150, 150, 150, 150), std::to_string(degree).c_str());
@@ -295,6 +346,7 @@ private:
 		entry.time = GetCurrentTime();
 		tableEntries.push_back(entry);
 	}
+
 };
 
 void embraceTheDarkness()
@@ -379,6 +431,51 @@ void embraceTheDarkness()
 	style.GrabRounding = 3;
 	style.LogSliderDeadzone = 4;
 	style.TabRounding = 4;
+}
+
+void on_message(struct mosquitto* mosq, void* obj, const struct mosquitto_message* message)
+{
+	if (message->payloadlen) {
+		std::string payload(static_cast<char*>(message->payload), message->payloadlen);
+
+		// Parse the JSON data
+		boost::json::value jsonData = boost::json::parse(payload);
+
+		// Extract the distance and degree data
+		int distance = jsonData.at("distance").as_int64();
+		int degree = jsonData.at("degree").as_int64();
+
+		// Add the data to the vectar vector
+		Target target;
+		target.distance = distance;
+		target.degree = degree;
+		targets.push_back(target);
+		vec[degree].second = distance;
+		if (!sweep) {
+			if (distance) {
+				deg = degree;
+				dist = distance;
+			}
+		}
+	}
+}
+
+void sendMQTTMessage(struct mosquitto* mosq, const std::string& direction) {
+	// Construct the message
+	std::string message = direction;
+
+	// Publish the message to the "radar/control" topic
+	mosquitto_publish(mosq, NULL, "radar/control", message.size(), message.data(), 0, false);
+}
+
+void on_connect(struct mosquitto* mosq, void* obj, int result)
+{
+	if (!result) {
+		mosquitto_subscribe(mosq, NULL, "radar/data", 0);
+	}
+	else {
+		fprintf(stderr, "Connect failed\n");
+	}
 }
 
 
